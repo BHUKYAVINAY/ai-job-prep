@@ -1,0 +1,35 @@
+.button {
+  padding: 12px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+
+  transition: all 0.3s ease-in-out;
+
+  &:hover {
+    transform: translateY(-2px);
+  }
+
+  &:active {
+    transform: scale(0.96);
+    transition: transform 0.1s ease;
+  }
+}
+
+.primary-button {
+  background: #2563eb;
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.25);
+
+  &:hover {
+    background: #1d4ed8;
+    box-shadow: 0 6px 18px rgba(37, 99, 235, 0.35);
+  }
+
+  &:active {
+    transform: scale(0.96);
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.2);
+  }
+}
