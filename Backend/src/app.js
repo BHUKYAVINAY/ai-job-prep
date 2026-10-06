@@ -1,12 +1,14 @@
 const express = require("express");
-const authRouter = require("./routes/auth.routes");
 const cookieParser = require("cookie-parser");
 const cors = require("cors");
+
+const authRouter = require("./routes/auth.routes");
+const interviewRouter = require("./routes/interview.routes");
 
 
 /**
  * @name app
- * @description Express application instance for the backend API.
+ * @description Express application instance.
  */
 const app = express();
 
@@ -24,13 +26,14 @@ app.use(cookieParser());
 
 
 /**
- * @description Enables Cross-Origin Resource Sharing (CORS)
- * for the frontend application.
+ * @description Enables CORS for the frontend application.
  */
-app.use(cors({
-    origin: "http://localhost:5173",
-    credentials: true
-}));
+app.use(
+    cors({
+        origin: "http://localhost:5173",
+        credentials: true
+    })
+);
 
 
 /**
@@ -38,6 +41,37 @@ app.use(cors({
  * @description Authentication-related API routes.
  */
 app.use("/api/auth", authRouter);
+
+
+/**
+ * @route /api/interview
+ * @description Interview report-related API routes.
+ */
+app.use("/api/interview", interviewRouter);
+
+
+/**
+ * @description Handles unknown routes.
+ */
+app.use((req, res) => {
+    res.status(404).json({
+        message: "Route not found"
+    });
+});
+
+
+/**
+ * @description Global error handler.
+ */
+app.use((err, req, res, next) => {
+    console.error("Server error:", err);
+
+    res.status(err.status || 500).json({
+        message:
+            err.message ||
+            "Internal server error"
+    });
+});
 
 
 module.exports = app;

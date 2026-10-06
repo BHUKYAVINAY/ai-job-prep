@@ -3,31 +3,36 @@ const mongoose = require("mongoose");
 
 /**
  * @name blacklistTokenSchema
- * @description Schema for storing JWT tokens that have been blacklisted after logout.
+ * @description Schema for storing blacklisted JWT tokens.
  */
-const blacklistTokenSchema = new mongoose.Schema({
-
-    /**
-     * @description JWT token that has been added to the blacklist.
-     */
-    token: {
-        type: String,
-        required: [true, "Token is required to be added in blacklist"]
-    }
-
-}, {
-    timestamps: true
-});
+const blacklistTokenSchema =
+    new mongoose.Schema(
+        {
+            token: {
+                type: String,
+                required: [
+                    true,
+                    "Token is required"
+                ],
+                unique: true
+            }
+        },
+        {
+            timestamps: true
+        }
+    );
 
 
 /**
  * @name tokenBlacklistModel
- * @description Mongoose model for managing blacklisted authentication tokens.
+ * @description Mongoose model for blacklisted tokens.
  */
-const tokenBlacklistModel = mongoose.model(
-    "Blacklist",
-    blacklistTokenSchema
-);
+const tokenBlacklistModel =
+    mongoose.model(
+        "Blacklist",
+        blacklistTokenSchema
+    );
 
 
-module.exports = tokenBlacklistModel;
+module.exports =
+    tokenBlacklistModel;

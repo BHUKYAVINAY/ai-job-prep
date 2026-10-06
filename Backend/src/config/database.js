@@ -3,24 +3,29 @@ const mongoose = require("mongoose");
 
 /**
  * @name connectedToDB
- * @description Connects the application to MongoDB using the MongoDB connection URI.
+ * @description Connects the application to MongoDB.
  * @access Private
  */
 async function connectedToDB() {
-
     try {
+        if (!process.env.MONGO_URI) {
+            throw new Error(
+                "MONGO_URI is not defined in .env"
+            );
+        }
 
-        /**
-         * Establish connection with MongoDB.
-         */
-        await mongoose.connect(process.env.MONGO_URI);
+        await mongoose.connect(
+            process.env.MONGO_URI
+        );
 
         console.log("Connected to database");
-
     } catch (err) {
+        console.error(
+            "Database connection failed:",
+            err.message
+        );
 
-        console.log(err);
-
+        process.exit(1);
     }
 }
 
