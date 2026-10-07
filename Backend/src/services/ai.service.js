@@ -1,112 +1,248 @@
-const {
-    GoogleGenAI
-} = require("@google/genai");
-
-const {
-    z
-} = require("zod");
-
-const {
-    zodToJsonSchema
-} = require("zod-to-json-schema");
-
-const puppeteer =
-    require("puppeteer");
+const Groq = require("groq-sdk");
+const { z } = require("zod");
+const puppeteer = require("puppeteer");
 
 
-const ai =
-    new GoogleGenAI({
-        apiKey:
-            process.env.GOOGLE_GENAI_API_KEY
-    });
+// ==================================================
+// GROQ CONFIGURATION
+// ==================================================
 
+if (!process.env.GROQ_API_KEY) {
+    throw new Error(
+        "GROQ_API_KEY is not configured"
+    );
+}
+
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY
+});
+
+const GROQ_MODEL =
+    process.env.GROQ_MODEL ||
+    "llama-3.3-70b-versatile";
+
+
+// ==================================================
+// INTERVIEW REPORT SCHEMA
+// ==================================================
 
 /**
  * @name interviewReportSchema
  * @description Zod schema for the AI-generated interview report.
  */
-const interviewReportSchema =
-    z.object({
-        matchScore:
-            z.number()
-                .min(0)
-                .max(100)
-                .describe(
-                    "Score between 0 and 100 indicating how well the candidate matches the job"
-                ),
+const interviewReportSchema = z.object({
+
+    matchScore: z.number()
+        .min(0)
+        .max(100),
+
+    technicalQuestions: z.array(
+        z.object({
+            question: z.string(),
+            intention: z.string(),
+            answer: z.string()
+        })
+    ),
+
+    behavioralQuestions: z.array(
+        z.object({
+            question: z.string(),
+            intention: z.string(),
+            answer: z.string()
+        })
+    ),
+
+    skillGaps: z.array(
+        z.object({
+            skill: z.string(),
+            severity: z.enum([
+                "low",
+                "medium",
+                "high"
+            ])
+        })
+    ),
+
+    preparationPlan: z.array(
+        z.object({
+            day: z.number(),
+            focus: z.string(),
+            tasks: z.array(
+                z.string()
+            )
+        })
+    ),
+
+    title: z.string()
+});
 
 
-        technicalQuestions:
-            z.array(
-                z.object({
-                    question:
-                        z.string(),
+// ==================================================
+// GROQ REQUEST
+// ==================================================
 
-                    intention:
-                        z.string(),
+/**
+ * @name generateGroqResponse
+ * @description Sends a prompt to Groq and returns the generated JSON string.
+ */
+async function generateGroqResponse({
+    prompt,
+    maxRetries = 3
+}) {
 
-                    answer:
-                        z.string()
-                })
-            ),
+    let lastError;
 
+    for (
+        let attempt = 1;
+        attempt <= maxRetries;
+        attempt++
+    ) {
 
-        behavioralQuestions:
-            z.array(
-                z.object({
-                    question:
-                        z.string(),
+        try {
 
-                    intention:
-                        z.string(),
-
-                    answer:
-                        z.string()
-                })
-            ),
+            console.log(
+                `Groq request attempt ${attempt}/${maxRetries}`
+            );
 
 
-        skillGaps:
-            z.array(
-                z.object({
-                    skill:
-                        z.string(),
+            const completion =
+                await groq.chat.completions.create({
 
-                    severity:
-                        z.enum([
-                            "low",
-                            "medium",
-                            "high"
-                        ])
-                })
-            ),
+                    model: GROQ_MODEL,
+
+                    messages: [
+
+                        {
+                            role: "system",
+
+                            content: `
+You are an expert technical interviewer,
+career coach, and professional resume assistant.
+
+You MUST follow the JSON structure requested
+by the user.
+
+Rules:
+
+- Return ONLY valid JSON.
+- Do not return Markdown.
+- Do not use code fences.
+- Do not add explanations outside JSON.
+- Do not omit required fields.
+- Follow the requested data types exactly.
+`
+                        },
+
+                        {
+                            role: "user",
+                            content: prompt
+                        }
+
+                    ],
+
+                    temperature: 0.1,
+
+                    response_format: {
+                        type: "json_object"
+                    }
+                });
 
 
-        preparationPlan:
-            z.array(
-                z.object({
-                    day:
-                        z.number(),
-
-                    focus:
-                        z.string(),
-
-                    tasks:
-                        z.array(
-                            z.string()
-                        )
-                })
-            ),
+            const content =
+                completion
+                    ?.choices?.[0]
+                    ?.message?.content;
 
 
-        title:
-            z.string()
-    });
+            if (!content) {
 
+                throw new Error(
+                    "Groq returned an empty response"
+                );
+            }
+
+
+            console.log(
+                "========== GROQ RAW RESPONSE =========="
+            );
+
+            console.log(content);
+
+            console.log(
+                "========================================"
+            );
+
+
+            return content;
+
+
+        } catch (error) {
+
+            lastError = error;
+
+
+            console.error(
+                `Groq attempt ${attempt} failed:`,
+                error.message
+            );
+
+
+            const status =
+                error?.status ||
+                error?.statusCode;
+
+
+            const retryable =
+                status === 429 ||
+                status === 500 ||
+                status === 502 ||
+                status === 503 ||
+                status === 504;
+
+
+            if (
+                !retryable ||
+                attempt === maxRetries
+            ) {
+
+                throw error;
+            }
+
+
+            const delay =
+                2000 * Math.pow(
+                    2,
+                    attempt - 1
+                );
+
+
+            console.log(
+                `Retrying Groq in ${delay / 1000} seconds...`
+            );
+
+
+            await new Promise(
+                resolve =>
+                    setTimeout(
+                        resolve,
+                        delay
+                    )
+            );
+        }
+    }
+
+
+    throw lastError;
+}
+
+
+// ==================================================
+// GENERATE INTERVIEW REPORT
+// ==================================================
 
 /**
  * @name generateInterviewReport
- * @description Generates an interview report using Gemini AI.
+ * @description Generates an interview preparation report using Groq AI.
  */
 async function generateInterviewReport({
     resume,
@@ -114,78 +250,203 @@ async function generateInterviewReport({
     jobDescription
 }) {
 
-    if (!process.env.GOOGLE_GENAI_API_KEY) {
-        throw new Error(
-            "GOOGLE_GENAI_API_KEY is not configured"
-        );
-    }
-
-
     const prompt = `
-Generate an interview preparation report for the candidate.
+Analyze the candidate and generate a complete
+interview preparation report.
 
-Candidate Resume:
+CANDIDATE RESUME:
 ${resume}
 
-Candidate Self Description:
+CANDIDATE SELF DESCRIPTION:
 ${selfDescription}
 
-Job Description:
+TARGET JOB DESCRIPTION:
 ${jobDescription}
 
-Analyze the candidate against the job description.
 
-Generate:
-1. Match score from 0 to 100
-2. Technical interview questions
-3. Behavioral interview questions
-4. Skill gaps
-5. Day-wise preparation plan
-6. Job title
+RETURN ONLY JSON.
 
-The questions should be relevant to the candidate's resume and the job description.
+The JSON MUST have exactly these fields:
 
-Answers should explain what the candidate should discuss during the interview.
+{
+    "matchScore": 85,
+    "technicalQuestions": [],
+    "behavioralQuestions": [],
+    "skillGaps": [],
+    "preparationPlan": [],
+    "title": "Full Stack Developer"
+}
+
+
+FIELD REQUIREMENTS:
+
+
+1. matchScore
+
+- Must be a NUMBER.
+- Must be between 0 and 100.
+- Example: 85
+- Do NOT return "85%".
+- Do NOT return "85" as a string.
+
+
+2. technicalQuestions
+
+Must be an array.
+
+Generate 5 technical questions.
+
+Every object MUST contain:
+
+{
+    "question": "...",
+    "intention": "...",
+    "answer": "..."
+}
+
+
+3. behavioralQuestions
+
+Must be an array.
+
+Generate 5 behavioral questions.
+
+Every object MUST contain:
+
+{
+    "question": "...",
+    "intention": "...",
+    "answer": "..."
+}
+
+
+4. skillGaps
+
+Must be an array.
+
+Every object MUST contain:
+
+{
+    "skill": "...",
+    "severity": "medium"
+}
+
+
+5. severity
+
+Must be exactly one of:
+
+"low"
+"medium"
+"high"
+
+
+6. preparationPlan
+
+Must be an array.
+
+Generate a 7-day preparation plan.
+
+Every object MUST contain:
+
+{
+    "day": 1,
+    "focus": "...",
+    "tasks": [
+        "...",
+        "..."
+    ]
+}
+
+
+7. day
+
+Must be a NUMBER.
+
+
+8. tasks
+
+Must be an array of strings.
+
+
+9. title
+
+Must be a STRING.
+
+Use the most appropriate job title
+based on the target job description.
+
+
+IMPORTANT:
+
+- Do not invent qualifications.
+- Do not invent education.
+- Do not invent experience.
+- Do not invent projects.
+- Do not invent certifications.
+- Base the analysis only on the provided information.
+- All six fields are REQUIRED.
+- Do not omit any field.
+- Return ONLY JSON.
 `;
 
 
-    const response =
-        await ai.models.generateContent({
-            model:
-                // "gemini-3-flash-preview",
-                "gemini-3.8-flash",
-
-            contents:
-                prompt,
-
-            config: {
-                responseMimeType:
-                    "application/json",
-
-                responseSchema:
-                    zodToJsonSchema(
-                        interviewReportSchema
-                    )
-            }
+    const content =
+        await generateGroqResponse({
+            prompt
         });
 
 
-    if (!response.text) {
+    let parsedResponse;
+
+
+    try {
+
+        parsedResponse =
+            JSON.parse(content);
+
+    } catch (error) {
+
+        console.error(
+            "Groq returned invalid JSON:"
+        );
+
+        console.error(content);
+
         throw new Error(
-            "AI returned an empty response"
+            "Groq returned invalid JSON for interview report"
         );
     }
 
 
-    const parsedResponse =
-        JSON.parse(response.text);
-
-
-    return interviewReportSchema.parse(
-        parsedResponse
+    console.log(
+        "Parsed Groq interview report:"
     );
+
+    console.log(
+        JSON.stringify(
+            parsedResponse,
+            null,
+            2
+        )
+    );
+
+
+    // Validate with Zod
+
+    const validatedReport =
+        interviewReportSchema.parse(
+            parsedResponse
+        );
+
+
+    return validatedReport;
 }
 
+
+// ==================================================
+// GENERATE PDF FROM HTML
+// ==================================================
 
 /**
  * @name generatePdfFromHtml
@@ -194,9 +455,12 @@ Answers should explain what the candidate should discuss during the interview.
 async function generatePdfFromHtml(
     htmlContent
 ) {
+
     const browser =
         await puppeteer.launch({
+
             headless: true,
+
             args: [
                 "--no-sandbox",
                 "--disable-setuid-sandbox"
@@ -205,6 +469,7 @@ async function generatePdfFromHtml(
 
 
     try {
+
         const page =
             await browser.newPage();
 
@@ -220,14 +485,19 @@ async function generatePdfFromHtml(
 
         const pdfBuffer =
             await page.pdf({
+
                 format: "A4",
 
                 printBackground: true,
 
                 margin: {
+
                     top: "20mm",
+
                     bottom: "20mm",
+
                     left: "15mm",
+
                     right: "15mm"
                 }
             });
@@ -235,11 +505,17 @@ async function generatePdfFromHtml(
 
         return pdfBuffer;
 
+
     } finally {
+
         await browser.close();
     }
 }
 
+
+// ==================================================
+// GENERATE RESUME PDF
+// ==================================================
 
 /**
  * @name generateResumePdf
@@ -253,74 +529,82 @@ async function generateResumePdf({
 
     const resumePdfSchema =
         z.object({
-            html:
-                z.string()
+
+            html: z.string()
+
         });
 
 
     const prompt = `
-Create a professional, ATS-friendly resume using the following information.
+Create a professional ATS-friendly resume.
 
-Original Resume:
+ORIGINAL RESUME:
 ${resume}
 
-Self Description:
+SELF DESCRIPTION:
 ${selfDescription}
 
-Target Job Description:
+TARGET JOB DESCRIPTION:
 ${jobDescription}
 
-Requirements:
+
+REQUIREMENTS:
 
 - Tailor the resume to the target job.
 - Highlight relevant skills and experience.
-- Do not invent qualifications, jobs, education, or experience.
+- Do not invent qualifications.
+- Do not invent jobs.
+- Do not invent education.
+- Do not invent projects.
+- Do not invent certifications.
 - Keep the resume concise.
 - Target 1-2 pages.
 - Use simple professional HTML.
-- Make the HTML suitable for conversion to PDF.
+- Make the HTML suitable for PDF conversion.
 - Make it ATS friendly.
-- Use clear sections such as:
-  Summary,
-  Skills,
-  Education,
-  Experience,
-  Projects,
-  Certifications if applicable.
-- Do not mention that AI generated the resume.
-- Return only the HTML inside the "html" field.
+- Use clear sections.
+- Do not mention AI.
+- Return ONLY JSON.
+
+
+The JSON MUST have exactly this structure:
+
+{
+    "html": "<complete HTML resume>"
+}
+
+
+The "html" value must contain
+the complete resume HTML.
 `;
 
 
-    const response =
-        await ai.models.generateContent({
-            model:
-                "gemini-3-flash-preview",
-
-            contents:
-                prompt,
-
-            config: {
-                responseMimeType:
-                    "application/json",
-
-                responseSchema:
-                    zodToJsonSchema(
-                        resumePdfSchema
-                    )
-            }
+    const content =
+        await generateGroqResponse({
+            prompt
         });
 
 
-    if (!response.text) {
+    let jsonContent;
+
+
+    try {
+
+        jsonContent =
+            JSON.parse(content);
+
+    } catch (error) {
+
+        console.error(
+            "Groq returned invalid resume JSON:"
+        );
+
+        console.error(content);
+
         throw new Error(
-            "AI returned an empty resume"
+            "Groq returned invalid JSON for resume"
         );
     }
-
-
-    const jsonContent =
-        JSON.parse(response.text);
 
 
     const validatedContent =
@@ -339,497 +623,13 @@ Requirements:
 }
 
 
+// ==================================================
+// EXPORTS
+// ==================================================
+
 module.exports = {
+
     generateInterviewReport,
+
     generateResumePdf
 };
-
-
-
-
-
-
-// // 
-// const { GoogleGenAI } = require("@google/genai");
-// const { z } = require("zod");
-// const { zodToJsonSchema } = require("zod-to-json-schema");
-// const puppeteer = require("puppeteer");
-
-
-// // --------------------------------------------------
-// // Gemini AI Configuration
-// // --------------------------------------------------
-
-// if (!process.env.GOOGLE_GENAI_API_KEY) {
-//     throw new Error(
-//         "GOOGLE_GENAI_API_KEY is not configured"
-//     );
-// }
-
-// const ai = new GoogleGenAI({
-//     apiKey: process.env.GOOGLE_GENAI_API_KEY
-// });
-
-
-// // Use one model for all Gemini requests
-// const GEMINI_MODEL =
-//     process.env.GEMINI_MODEL || "gemini-3.8-flash";
-
-
-// // --------------------------------------------------
-// // Interview Report Schema
-// // --------------------------------------------------
-
-// /**
-//  * @name interviewReportSchema
-//  * @description Zod schema for the AI-generated interview report.
-//  */
-// const interviewReportSchema = z.object({
-//     matchScore: z.number()
-//         .min(0)
-//         .max(100)
-//         .describe(
-//             "Score between 0 and 100 indicating how well the candidate matches the job"
-//         ),
-
-//     technicalQuestions: z.array(
-//         z.object({
-//             question: z.string(),
-//             intention: z.string(),
-//             answer: z.string()
-//         })
-//     ),
-
-//     behavioralQuestions: z.array(
-//         z.object({
-//             question: z.string(),
-//             intention: z.string(),
-//             answer: z.string()
-//         })
-//     ),
-
-//     skillGaps: z.array(
-//         z.object({
-//             skill: z.string(),
-//             severity: z.enum([
-//                 "low",
-//                 "medium",
-//                 "high"
-//             ])
-//         })
-//     ),
-
-//     preparationPlan: z.array(
-//         z.object({
-//             day: z.number(),
-//             focus: z.string(),
-//             tasks: z.array(
-//                 z.string()
-//             )
-//         })
-//     ),
-
-//     title: z.string()
-// });
-
-
-// // --------------------------------------------------
-// // Gemini Request With Retry
-// // --------------------------------------------------
-
-// /**
-//  * @name generateWithRetry
-//  * @description Generates Gemini content and retries temporary
-//  *              service-unavailable errors.
-//  */
-// async function generateWithRetry({
-//     contents,
-//     config,
-//     maxRetries = 3
-// }) {
-//     let lastError;
-
-//     for (let attempt = 0; attempt <= maxRetries; attempt++) {
-//         try {
-//             console.log(
-//                 `Gemini request attempt ${attempt + 1}/${maxRetries + 1}`
-//             );
-
-//             const response =
-//                 await ai.models.generateContent({
-//                     model: GEMINI_MODEL,
-//                     contents,
-//                     config
-//                 });
-
-//             return response;
-
-//         } catch (error) {
-//             lastError = error;
-
-//             const errorCode =
-//                 error?.status ||
-//                 error?.code;
-
-//             const errorMessage =
-//                 error?.message || "";
-
-//             const isTemporaryError =
-//                 errorCode === "UNAVAILABLE" ||
-//                 errorCode === 503 ||
-//                 errorMessage.includes("503") ||
-//                 errorMessage.includes("high demand") ||
-//                 errorMessage.includes("UNAVAILABLE");
-
-//             if (!isTemporaryError) {
-//                 throw error;
-//             }
-
-//             if (attempt === maxRetries) {
-//                 break;
-//             }
-
-//             // 2s → 4s → 8s
-//             const delay =
-//                 2000 * Math.pow(2, attempt);
-
-//             console.log(
-//                 `Gemini temporarily unavailable. Retrying in ${delay / 1000}s...`
-//             );
-
-//             await new Promise(
-//                 resolve => setTimeout(resolve, delay)
-//             );
-//         }
-//     }
-
-//     throw new Error(
-//         `Gemini service is currently unavailable after ${maxRetries + 1} attempts. Please try again later. Original error: ${lastError?.message || "Unknown error"}`
-//     );
-// }
-
-
-// // --------------------------------------------------
-// // Generate Interview Report
-// // --------------------------------------------------
-
-// /**
-//  * @name generateInterviewReport
-//  * @description Generates an interview preparation report using Gemini AI.
-//  */
-// /**
-//  * @name generateInterviewReport
-//  * @description Generates an interview preparation report using Gemini AI.
-//  */
-// async function generateInterviewReport({
-//     resume,
-//     selfDescription,
-//     jobDescription
-// }) {
-//     const prompt = `
-// You are an expert technical interviewer and career coach.
-
-// Analyze the candidate's resume against the target job description.
-
-// Candidate Resume:
-// ${resume}
-
-// Candidate Self Description:
-// ${selfDescription}
-
-// Target Job Description:
-// ${jobDescription}
-
-// Generate a complete interview preparation report.
-
-// The response MUST contain exactly these fields:
-
-// {
-//     "matchScore": 0,
-//     "technicalQuestions": [],
-//     "behavioralQuestions": [],
-//     "skillGaps": [],
-//     "preparationPlan": [],
-//     "title": ""
-// }
-
-// Rules:
-
-// 1. matchScore
-// - Must be a NUMBER between 0 and 100.
-// - Example: 82
-// - Do NOT return "82%" or "82".
-
-// 2. technicalQuestions
-// - Must be an ARRAY.
-// - Each item must contain:
-//   - question
-//   - intention
-//   - answer
-
-// 3. behavioralQuestions
-// - Must be an ARRAY.
-// - Each item must contain:
-//   - question
-//   - intention
-//   - answer
-
-// 4. skillGaps
-// - Must be an ARRAY.
-// - Each item must contain:
-//   - skill
-//   - severity
-// - severity MUST be exactly one of:
-//   - "low"
-//   - "medium"
-//   - "high"
-
-// 5. preparationPlan
-// - Must be an ARRAY.
-// - Each item must contain:
-//   - day
-//   - focus
-//   - tasks
-// - day must be a NUMBER.
-// - tasks must be an ARRAY of strings.
-
-// 6. title
-// - Must be a STRING containing the target job title.
-
-// Generate realistic technical and behavioral questions based on
-// the candidate's actual resume and the target job description.
-
-// Do not invent qualifications, experience, education, or projects.
-
-// Return ONLY valid JSON matching the requested structure.
-// `;
-
-//     const response = await generateWithRetry({
-//         contents: prompt,
-
-//         config: {
-//             responseMimeType: "application/json",
-
-//             responseSchema: zodToJsonSchema(
-//                 interviewReportSchema
-//             )
-//         }
-//     });
-
-//     console.log(
-//         "Gemini raw response:",
-//         response.text
-//     );
-
-//     if (!response.text) {
-//         throw new Error(
-//             "AI returned an empty interview report"
-//         );
-//     }
-
-//     let parsedResponse;
-
-//     try {
-//         parsedResponse = JSON.parse(response.text);
-//     } catch (error) {
-//         console.error(
-//             "Gemini returned invalid JSON:",
-//             response.text
-//         );
-
-//         throw new Error(
-//             "AI returned invalid JSON for interview report"
-//         );
-//     }
-
-//     console.log(
-//         "Parsed Gemini response:",
-//         parsedResponse
-//     );
-
-//     return interviewReportSchema.parse(
-//         parsedResponse
-//     );
-// }
-
-// // --------------------------------------------------
-// // Generate PDF From HTML
-// // --------------------------------------------------
-
-// /**
-//  * @name generatePdfFromHtml
-//  * @description Converts HTML content into a PDF using Puppeteer.
-//  */
-// async function generatePdfFromHtml(
-//     htmlContent
-// ) {
-
-//     const browser =
-//         await puppeteer.launch({
-//             headless: true,
-
-//             args: [
-//                 "--no-sandbox",
-//                 "--disable-setuid-sandbox"
-//             ]
-//         });
-
-
-//     try {
-
-//         const page =
-//             await browser.newPage();
-
-
-//         await page.setContent(
-//             htmlContent,
-//             {
-//                 waitUntil:
-//                     "networkidle0"
-//             }
-//         );
-
-
-//         const pdfBuffer =
-//             await page.pdf({
-//                 format: "A4",
-
-//                 printBackground: true,
-
-//                 margin: {
-//                     top: "20mm",
-//                     bottom: "20mm",
-//                     left: "15mm",
-//                     right: "15mm"
-//                 }
-//             });
-
-
-//         return pdfBuffer;
-
-//     } finally {
-
-//         await browser.close();
-
-//     }
-// }
-
-
-// // --------------------------------------------------
-// // Generate Resume PDF
-// // --------------------------------------------------
-
-// /**
-//  * @name generateResumePdf
-//  * @description Generates an ATS-friendly resume and converts it into PDF.
-//  */
-// async function generateResumePdf({
-//     resume,
-//     selfDescription,
-//     jobDescription
-// }) {
-
-//     const resumePdfSchema =
-//         z.object({
-//             html: z.string()
-//         });
-
-
-//     const prompt = `
-// Create a professional, ATS-friendly resume using the
-// following information.
-
-// Original Resume:
-// ${resume}
-
-// Self Description:
-// ${selfDescription}
-
-// Target Job Description:
-// ${jobDescription}
-
-// Requirements:
-
-// - Tailor the resume to the target job.
-// - Highlight relevant skills and experience.
-// - Do not invent qualifications, jobs, education, or experience.
-// - Keep the resume concise.
-// - Target 1-2 pages.
-// - Use simple professional HTML.
-// - Make the HTML suitable for conversion to PDF.
-// - Make it ATS friendly.
-// - Use clear sections such as:
-//   Summary,
-//   Skills,
-//   Education,
-//   Experience,
-//   Projects,
-//   Certifications if applicable.
-// - Do not mention that AI generated the resume.
-// - Return only the HTML inside the "html" field.
-// `;
-
-
-//     const response =
-//         await generateWithRetry({
-//             contents: prompt,
-
-//             config: {
-//                 responseMimeType:
-//                     "application/json",
-
-//                 responseSchema:
-//                     zodToJsonSchema(
-//                         resumePdfSchema
-//                     )
-//             }
-//         });
-
-
-//     if (!response.text) {
-//         throw new Error(
-//             "AI returned an empty resume"
-//         );
-//     }
-
-
-//     let jsonContent;
-
-//     try {
-
-//         jsonContent =
-//             JSON.parse(response.text);
-
-//     } catch (error) {
-
-//         throw new Error(
-//             "AI returned invalid JSON for resume"
-//         );
-
-//     }
-
-
-//     const validatedContent =
-//         resumePdfSchema.parse(
-//             jsonContent
-//         );
-
-
-//     const pdfBuffer =
-//         await generatePdfFromHtml(
-//             validatedContent.html
-//         );
-
-
-//     return pdfBuffer;
-// }
-
-
-// // --------------------------------------------------
-// // Exports
-// // --------------------------------------------------
-
-// module.exports = {
-//     generateInterviewReport,
-//     generateResumePdf
-// };
